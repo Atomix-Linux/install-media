@@ -27,9 +27,9 @@ ADDITIONAL_PACKAGES="\
 LOCAL_REPO="${script_dir}/extra_pkg"
 mkdir -p ${LOCAL_REPO}
 curl -L --remote-name-all --output-dir ${LOCAL_REPO} ${ADDITIONAL_PACKAGES}
-sed "s|LOCAL_REPO|$LOCAL_REPO|g" $script_dir/pacman.conf > $script_dir/pacman.conf
 
 repo-add ${LOCAL_REPO}/atomix.db.tar.gz ${LOCAL_REPO}/*.pkg.*
+sed "s|LOCAL_REPO|$LOCAL_REPO|g" $script_dir/pacman.conf.template > $script_dir/pacman.conf
 
 # make the container build the iso
 mkarchiso -v -w "${temp_dir}" -o "${output_dir}" "${script_dir}"

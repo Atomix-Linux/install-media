@@ -2,3 +2,4 @@ temp/
 output/
 atomix/extra_pkg/
 atomix/work/
+atomix/pacman.conf
