@@ -1,0 +1,7 @@
+NAME="Atomix Linux Installation Enviroment"
+PRETTY_NAME="Atomix Linux Installation Enviroment"
+ID=atomix
+ID_LIKE=arch
+ANSI_COLOR="1;33"
+HOME_URL="https://atomix-linux.github.io"
+BUG_REPORT_URL="https://github.com/Atomix-Linux/atomix/issues"
