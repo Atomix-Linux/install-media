@@ -5,6 +5,8 @@ base
 broadcom-wl-dkms
 btrfs-progs
 cpio
+sudo
+firefox
 dhcpcd
 diffutils
 dosfstools
@@ -26,6 +28,8 @@ usbutils
 wget
 zsh
 networkmanager
+python-requests
+papirus-icon-theme
 lightdm
 lxqt
 xorg-server
@@ -80,5 +84,3 @@ mtpfs
 udiskie
 udisks2
 xdg-user-dirs
-
-atomixinstall

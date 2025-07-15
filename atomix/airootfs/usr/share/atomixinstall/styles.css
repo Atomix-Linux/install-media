@@ -1,0 +1,45 @@
+Screen {
+    background: #1e1e2e;
+    color: #cdd6f4;
+    /* font-size nie jest obsługiwane */
+}
+
+Static {
+    padding: 1 2;
+    border: solid #313244;
+    background: #313244;
+    margin: 1 0;
+    text-align: center;
+}
+
+OptionList {
+    border: solid #585b70;
+    background: #45475a;
+    height: auto;
+    max-height: 15;
+    margin-top: 1;
+}
+
+OptionList > Option {
+    padding: 0 2;
+}
+
+OptionList > Option.--highlight {
+    background: #89b4fa;
+    color: #1e1e2e;
+    /* font-weight nie jest obsługiwane */
+}
+
+Center {
+    align-horizontal: center;
+    align-vertical: middle;
+}
+
+Input {
+    border: solid #585b70;
+    padding: 0 1;
+    background: #313244;
+    color: #cdd6f4;
+    margin-top: 1;
+    /* border-radius nie jest obsługiwane */
+}

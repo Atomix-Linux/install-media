@@ -19,17 +19,7 @@ mkdir -p "${output_dir}"
 
 rm -rf "${temp_dir}"
 mkdir -p "${temp_dir}"
-
-ADDITIONAL_PACKAGES="\
-	https://github.com/Atomix-Linux/atomixinstall/releases/download/0.0.4-alpha/atomixinstall-0.0.4-1-any.pkg.tar.zst \
-"
-
-LOCAL_REPO="${script_dir}/extra_pkg"
-mkdir -p ${LOCAL_REPO}
-curl -L --remote-name-all --output-dir ${LOCAL_REPO} ${ADDITIONAL_PACKAGES}
-
-repo-add ${LOCAL_REPO}/atomix.db.tar.gz ${LOCAL_REPO}/*.pkg.*
-sed "s|LOCAL_REPO|$LOCAL_REPO|g" $script_dir/pacman.conf.template > $script_dir/pacman.conf
+cp -v $script_dir/pacman.conf.template  $script_dir/pacman.conf
 
 # make the container build the iso
 mkarchiso -v -w "${temp_dir}" -o "${output_dir}" "${script_dir}"
