@@ -21,7 +21,7 @@ rm -rf "${temp_dir}"
 mkdir -p "${temp_dir}"
 
 ADDITIONAL_PACKAGES="\
-	https://github.com/Atomix-Linux/atomixinstall/releases/download/0.0.3-alpha/atomixinstall-0.0.2-1-any.pkg.tar.zst \
+	https://github.com/Atomix-Linux/atomixinstall/releases/download/0.0.4-alpha/atomixinstall-0.0.4-1-any.pkg.tar.zst \
 "
 
 LOCAL_REPO="${script_dir}/extra_pkg"
