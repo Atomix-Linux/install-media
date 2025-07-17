@@ -1,9 +1,10 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
-EFI_PART=$1
-SYS_PART=$2
+EFI_PART=$2
+SYS_PART=$1
 
 echo $EFI_PART
 echo $SYS_PART

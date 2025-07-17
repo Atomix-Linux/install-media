@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Install Atomix Linux
+Exec=sudo python3 /usr/share/atomixinstall/main.py
+Type=Application
+Icon=system-installer
+Categories=System;
+Terminal=true

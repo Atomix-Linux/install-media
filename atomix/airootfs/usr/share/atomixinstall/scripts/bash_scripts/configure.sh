@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
 export USERNAME=$1
 export PASSWORD=$2

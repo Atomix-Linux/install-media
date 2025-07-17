@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
 MOUNT_PATH="/tmp/zenkai_root"
 
@@ -49,3 +50,5 @@ get_boot_cfg "${NAME}" "${AMD_UCODE}" "${INTEL_UCODE}" > ${BOOT_CFG}
 echo "default zenkai.conf" > ${MOUNT_PATH}/boot/loader/loader.conf
 
 echo "Done."
+
+rm -r ${MOUNT_PATH}/atomix-*

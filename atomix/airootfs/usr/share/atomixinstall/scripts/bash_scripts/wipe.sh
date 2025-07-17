@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
 DISK="Null"
 
@@ -34,4 +35,4 @@ echo "[INFO] Formating EFI as fat32..."
 mkfs.fat -F32 -n EFI "$EFI_PART"
 
 echo "[INFO] Formating System Partiton as btrfs..."
-mkfs.btrfs -F32 -n zenkai_root "$BTRFS_PART"
+mkfs.btrfs -L zenkai_root "$BTRFS_PART"

@@ -1,8 +1,9 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
-# Nie ma znaczenie
+# Nie ma znaczenia
 
 NAME=$(echo /tmp/zenkai_root/*.img.tar.xz.part.aa | cut -f 1 -d '.')
 
