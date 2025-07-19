@@ -1,0 +1,486 @@
+#!/bin/bash
+
+set -e
+set -o pipefail
+
+get_img_url() {
+    CHANNEL=$1
+    local releases_json=$(cat)  # Read from stdin
+
+    # Order by creation date in reverse
+    result=$(echo "$releases_json" | jq 'sort_by(.created_at) | reverse')
+
+    # Remove entries which have not been completed uploading
+    result=$(echo "${result}" | jq 'map(select(.assets | all(.state == "uploaded")))')
+
+    # Always check for stable date
+    stable_release_date="1970-01-01T00:00:00Z"
+    stable_download_url=""
+
+    stable_entry=$(echo "${result}" | jq -r '.[] | select(.prerelease == false) | .created_at' | head -1)
+    if [ -n "$stable_entry" ]; then
+        stable_release_date=$stable_entry
+        stable_download_url=$(echo "${result}" | jq -r '.[] | select(.prerelease == false) | .assets[] | select(.browser_download_url | test("img")) | .browser_download_url' | head -1)
+    fi
+
+    # Filter channels by release naming conventions
+    if [[ "$CHANNEL" =~ ^[0-9]+\-?[0-9]*$ ]] ; then
+        # Explicit version numbers
+        result=$(echo "${result}" | jq -r --arg ver "$CHANNEL" '.[] |
+                  select(.prerelease == false) |
+                  select(.name | endswith($ver)) |
+                  .assets[] |
+                  select(.browser_download_url | test("img")) |
+                  .browser_download_url' |
+                  head -1)
+    elif [ "$CHANNEL" == "stable" ]; then
+        result=$stable_download_url
+    elif [ "$CHANNEL" == "testing" ]; then
+        # Testing channel
+        testing_entry=$(echo "${result}" | jq '.[] |
+                     select(.prerelease == true) |
+                     select(.name | test("\\[.*\\]") | not) |
+                     .created_at' | head -1)
+
+        if [ -n "$testing_entry" ]; then
+            testing_url=$(echo "${result}" | jq -r '.[] |
+                         select(.prerelease == true) |
+                         select(.name | test("\\[.*\\]") | not) |
+                         .assets[] |
+                         select(.browser_download_url | test("img")) |
+                         .browser_download_url' | head -1)
+
+            if [ $(date -d "$testing_entry" +%s) -gt $(date -d "$stable_release_date" +%s) ]; then
+                result=$testing_url
+            else
+                result=$stable_download_url
+            fi
+        else
+            result=$stable_download_url
+        fi
+    else
+        # Custom channel
+        channel_entry=$(echo "${result}" | jq --arg chan "$CHANNEL" '.[] |
+                      select(.prerelease == true) |
+                      select(.name | test("\\[" + $chan + "\\]"; "i"))')
+
+        if [ -n "$channel_entry" ]; then
+            unstable_release_date=$(echo "$channel_entry" | jq -r '.created_at' | head -1)
+            unstable_url=$(echo "$channel_entry" | jq -r '.assets[] |
+                          select(.browser_download_url | test("img")) |
+                          .browser_download_url' | head -1)
+
+            if [ $(date -d "$unstable_release_date" +%s) -gt $(date -d "$stable_release_date" +%s) ]; then
+                result=$unstable_url
+            else
+                result=$stable_download_url
+            fi
+        else
+            result=$stable_download_url
+        fi
+    fi
+
+    # Handle split files
+    if [[ "$result" == *".part.aa"* ]]; then
+        release_id=$(echo "$releases_json" | jq -r '.[0].id')
+        parts=$(curl -s "https://api.github.com/repos/${REPO}/releases/${release_id}/assets" | \
+                jq -r '.[] | select(.name | test(".*part.a[a-z]")) | .browser_download_url' | sort)
+        echo $parts
+    else
+        echo $result
+    fi
+}
+
+get_boot_cfg() {
+    local version=${1}
+    local amd_ucode=${2}
+    local intel_ucode=${3}
+    local additional_arguments=${4}
+
+    echo "title ${version}
+linux /${version}/vmlinuz-linux
+${amd_ucode}
+${intel_ucode}
+initrd /${version}/chroot-linux.img
+options root=LABEL=aldm_root rw rootflags=subvol=deploys/${version}  loglevel=3 rd.systemd.show_status=auto rd.udev.log_priority=3 ${additional_arguments}"
+}
+
+get_deployment_to_delete() {
+    local current_version=${1}
+    local boot_cfg_path=${2}
+    local deployment_path=${3}
+
+    local TO_BOOT=$(get_next_boot_deployment ${current_version} ${boot_cfg_path})
+
+    ls -1 ${deployment_path} | grep -v ${current_version} | grep -v ${TO_BOOT} | head -1 || echo
+}
+
+get_next_boot_deployment() {
+    local current_version=${1}
+    local boot_cfg_path=${2}
+
+    local TO_BOOT='this-is-not-a-valid-version-string'
+    if [ -f "${boot_cfg_path}" ] && grep "^title" "${boot_cfg_path}" > /dev/null; then
+        TO_BOOT=$(grep ^title ${boot_cfg_path} | sed 's/title //')
+    fi
+
+    echo ${TO_BOOT}
+}
+
+clean_progress() {
+    local scale=$1
+    local postfix=$2
+    local last_value=$scale
+    while IFS= read -r line; do
+        value=$(( ${line}*${scale}/100 ))
+        if [ "$last_value" != "$value" ]; then
+            echo ${value}${postfix}
+            last_value=$value
+        fi
+    done
+}
+
+download_parts() {
+    local parts_str=$1
+    local mount_path=$2
+    local steam_progress=$3
+    local show_ui=$4
+
+    # Convert string to array
+    IFS=' ' read -r -a parts <<< "$parts_str"
+
+    # Get base name from first part
+    BASE_NAME=$(basename "${parts[0]%.part.aa*}")
+    PART_FILES=()
+
+    # Get total number of parts
+    total_parts=${#parts[@]}
+    part_num=0
+
+    # Download each part
+    for part_url in "${parts[@]}"; do
+        part_num=$((part_num+1))
+        part_name=$(basename "$part_url")
+        PART_FILES+=("${mount_path}/${part_name}")
+
+        if [ $steam_progress -eq 1 ]; then
+            # Steam progress mode
+            curl --http1.1 -# -L -o "${mount_path}/${part_name}" -C - "${part_url}" 2>&1 | \
+            stdbuf -oL tr '\r' '\n' | grep --line-buffered -oP '^\s*\K[0-9]+' | clean_progress 91 %
+        elif [ -z "$show_ui" ]; then
+            # Text mode
+            echo "downloading ${part_name} (part $part_num/$total_parts)..."
+            curl --http1.1 -L -o "${mount_path}/${part_name}" -C - "${part_url}"
+        else
+            # UI mode - show progress for each part
+            {
+                curl --http1.1 -# -L -o "${mount_path}/${part_name}" -C - "${part_url}" 2>&1 | \
+                stdbuf -oL tr '\r' '\n' | grep --line-buffered -oP '^\s*\K[0-9]+' | \
+                while read -r progress; do
+                    # Calculate overall progress across all parts
+                    overall_progress=$(( (part_num - 1) * 100 + progress ))
+                    overall_percent=$(( overall_progress / total_parts ))
+                    echo "$overall_percent"
+                done
+            } | whiptail --gauge "Downloading system image part $part_num/$total_parts (${part_name})" 10 50 0
+        fi
+    done
+
+    # Combine parts
+    echo "Combining parts into ${BASE_NAME}..."
+    cat "${PART_FILES[@]}" > "${mount_path}/${BASE_NAME}"
+
+    # Verify checksum if available
+    if [ -f "${mount_path}/sha256sum.txt" ]; then
+        echo "Verifying checksum..."
+        expected_checksum=$(grep "${BASE_NAME}" "${mount_path}/sha256sum.txt" | cut -d' ' -f1)
+        actual_checksum=$(sha256sum "${mount_path}/${BASE_NAME}" | cut -d' ' -f1)
+
+        if [ "$expected_checksum" != "$actual_checksum" ]; then
+            echo "Checksum verification failed!"
+            rm -f "${mount_path}/${BASE_NAME}"
+            exit 1
+        fi
+    else
+        echo "Warning: No sha256sum.txt found, skipping checksum verification"
+    fi
+
+    # Clean up parts
+    rm -f "${PART_FILES[@]}"
+
+    echo "${mount_path}/${BASE_NAME}"
+}
+
+main() {
+    if [ $EUID -ne 0 ]; then
+        echo "$(basename $0) must be run as root"
+        exit 1
+    fi
+
+    ALDM_CHECK_UPDATE=0
+    ALDM_STEAM_PROGRESS=0
+    ALDM_SOURCE=""
+    ALDM_PARAMS=""
+
+    while (( "$#" )); do
+        case $1 in
+            --check)
+                ALDM_CHECK_UPDATE=1
+                shift
+                ;;
+            --steam-progress)
+                ALDM_STEAM_PROGRESS=1
+                shift
+                ;;
+            -*|--*)
+                echo "Unknown argument $1"
+                exit 1
+                ;;
+            *) # preserve positional arguments
+                ALDM_PARAMS="${ALDM_PARAMS}$1 " # Use trailing space for the match below
+                shift
+                ;;
+        esac
+    done
+
+    if [ ! -d /sys/firmware/efi/efivars ]; then
+        echo "Legacy BIOS installs are not supported. Aborting."
+        exit 1
+    fi
+
+    # keep only the first param as source
+    ALDM_SOURCE="${ALDM_PARAMS%% *}"
+
+    MOUNT_PATH=/aldm_root
+
+    if ! mountpoint -q ${MOUNT_PATH}; then
+        MOUNT_PATH=/tmp/aldm_root
+    fi
+
+    if ! mountpoint -q ${MOUNT_PATH}; then
+        mkdir -p ${MOUNT_PATH}
+        mount -L aldm_root ${MOUNT_PATH}
+        sleep 5
+    fi
+
+    if ! mountpoint -q ${MOUNT_PATH}/boot && ls -1 /dev/disk/by-label | grep EFI > /dev/null; then
+        mkdir -p ${MOUNT_PATH}/boot
+        mount -L EFI ${MOUNT_PATH}/boot
+        sleep 5
+    fi
+
+    DEPLOY_PATH=${MOUNT_PATH}/deploys
+    mkdir -p ${DEPLOY_PATH}
+
+    BOOT_CFG="${MOUNT_PATH}/boot/loader/entries/aldm.conf"
+    mkdir -p ${MOUNT_PATH}/boot/loader/entries
+
+    # delete deploys under these conditions:
+    # - we are currently running inside a aldm deployment (i.e. not during install)
+    # - the deployment is not currently running
+    # - the deployment is not configured to be run on next boot
+    if command -v aldm-release >/dev/null && aldm-release > /dev/null; then
+        CURRENT=$(aldm-release)
+        TO_DELETE=$(get_deployment_to_delete ${CURRENT} ${BOOT_CFG} ${DEPLOY_PATH})
+
+        if [ ! -z ${TO_DELETE} ]; then
+            echo "deleting ${TO_DELETE}..."
+            btrfs subvolume delete ${DEPLOY_PATH}/${TO_DELETE} || true
+            rm -rf ${MOUNT_PATH}/boot/${TO_DELETE}
+        fi
+    fi
+
+    if [ ! -z "$ALDM_SOURCE" ] && [ "$ALDM_SOURCE" != " " ] && [ $ALDM_CHECK_UPDATE -eq 0 ] && [ $ALDM_STEAM_PROGRESS -eq 0 ]; then
+        echo "$ALDM_SOURCE" > "${MOUNT_PATH}/source"
+    fi
+
+    if [ -e "${MOUNT_PATH}/source" ]; then
+        SOURCE=$(head -1 "${MOUNT_PATH}/source")
+    else
+        echo "WARNING: source wasn't specified"
+        SOURCE=""
+    fi
+
+    if [ "${local_install}" == true ]; then
+        mkdir -p /root/tmp_source
+        mount -o rw -L ALDM_UPDATE /root/tmp_source
+        FILE_NAME=$(basename /root/tmp_source/*.img.tar.xz*)
+        NAME=$(echo "${FILE_NAME}" | cut -f 1 -d '.')
+        SUBVOL="${DEPLOY_PATH}/${NAME}"
+        IMG_FILE="/root/tmp_source/${FILE_NAME}"
+    elif [[ "$ALDM_SOURCE" == *".img.tar.xz" ]]; then
+        FILE_NAME=$(basename "${ALDM_SOURCE}")
+        NAME=$(echo "${FILE_NAME}" | cut -f 1 -d '.')
+        SUBVOL="${DEPLOY_PATH}/${NAME}"
+        IMG_FILE=${ALDM_SOURCE}
+    elif [[ "$ALDM_SOURCE" == *".img" ]]; then
+        FILE_NAME=$(basename "${ALDM_SOURCE}")
+        NAME=$(echo "${FILE_NAME}" | cut -f 1 -d '.')
+        SUBVOL="${DEPLOY_PATH}/${NAME}"
+        IMG_FILE=${ALDM_SOURCE}
+    else
+        if [ -z "$SOURCE" ]; then
+            echo "ERROR: No source specified"
+            exit 1
+        fi
+
+        REPO=$(echo "${SOURCE}" | cut -f 1 -d ':')
+        CHANNEL=$(echo "${SOURCE}" | cut -f 2 -d ':')
+
+        RELEASES_URL="https://api.github.com/repos/${REPO}/releases"
+
+        # Capture API response for debugging
+        api_response=$(curl --http1.1 -L -s "${RELEASES_URL}")
+
+        # Check for API errors
+        if echo "$api_response" | jq -e 'type == "object" and has("message")' >/dev/null; then
+            error_message=$(echo "$api_response" | jq -r '.message')
+            echo "GitHub API error: $error_message"
+            if [[ "$error_message" == *"rate limit"* ]]; then
+                echo "GitHub API rate limit exceeded"
+                exit 29
+            fi
+            exit 1
+        fi
+
+        # Get image URL
+        IMG_URL=$(echo "$api_response" | get_img_url "${CHANNEL}")
+
+        if [ -z "$IMG_URL" ] || [ "$IMG_URL" == "null" ]; then
+            echo "No matching source found"
+            exit 1
+        fi
+
+        # Handle split files
+        if [[ "$IMG_URL" == *".part.aa"* ]]; then
+            # Download all parts and combine them
+            IMG_FILE=$(download_parts "$IMG_URL" "$MOUNT_PATH" "$ALDM_STEAM_PROGRESS" "$SHOW_UI")
+            FILE_NAME=$(basename "${IMG_FILE}")
+            NAME=$(echo "${FILE_NAME}" | cut -f 1 -d '.')
+            SUBVOL="${DEPLOY_PATH}/${NAME}"
+        else
+            # Single file download
+            FILE_NAME=$(basename "${IMG_URL}")
+            NAME=$(echo "${FILE_NAME}" | cut -f 1 -d '.')
+            BASE_URL=$(dirname "${IMG_URL}")
+            CHECKSUM=$(curl --http1.1 -L -s "${BASE_URL}/sha256sum.txt" | grep "${FILE_NAME}" | cut -d ' ' -f1)
+            SUBVOL="${DEPLOY_PATH}/${NAME}"
+            IMG_FILE="${MOUNT_PATH}/${FILE_NAME}"
+
+            if [ -e "${SUBVOL}" ]; then
+                echo "${NAME} already installed; aborting"
+                exit 7 # let Steam know there is no update available
+            fi
+
+            if [ $ALDM_CHECK_UPDATE -eq 1 ]; then
+                echo "Update available: ${NAME}"
+                exit 0 # let Steam know there is an update available
+            fi
+
+            if [ $ALDM_STEAM_PROGRESS -eq 1 ]; then
+                curl --http1.1 -# -L -o "${IMG_FILE}" -C - "${IMG_URL}" 2>&1 | \
+                stdbuf -oL tr '\r' '\n' | grep --line-buffered -oP '^\s*\K[0-9]+' | clean_progress 91 %
+            elif [ -z ${SHOW_UI} ]; then
+                echo "downloading ${NAME}..."
+                curl --http1.1 -L -o "${IMG_FILE}" -C - "${IMG_URL}"
+            else
+                curl --http1.1 -# -L -o "${IMG_FILE}" -C - "${IMG_URL}" 2>&1 | \
+                stdbuf -oL tr '\r' '\n' | grep --line-buffered -oP '^\s*\K[0-9]+' | clean_progress 100 | \
+                whiptail --gauge "Downloading system image (${NAME})" 10 50 0
+            fi
+
+            if [ -n "$CHECKSUM" ]; then
+                CHECKSUM2=$(sha256sum "${IMG_FILE}" | cut -d' ' -f1)
+                if [ "$CHECKSUM" != "$CHECKSUM2" ]; then
+                    rm -f "${IMG_FILE}"
+                    echo "checksum does not match; aborting"
+                    exit 1
+                fi
+            else
+                echo "Warning: No checksum found, skipping verification"
+            fi
+        fi
+    fi
+
+    if [ -z "${SHOW_UI}" ]; then
+        echo "installing ${NAME}..."
+    else
+        whiptail --infobox "Extracting and installing system image (${NAME}). This may take some time." 10 50
+    fi
+
+    if [[ "${IMG_FILE##*.}" == "img" ]]; then
+        btrfs receive --quiet ${DEPLOY_PATH} < ${MOUNT_PATH}/atomix*
+    else
+        tar xfO ${MOUNT_PATH}/atomix* | btrfs receive --quiet ${DEPLOY_PATH}
+    fi
+
+    mkdir -p "${MOUNT_PATH}/boot/${NAME}"
+    cp "${SUBVOL}/boot/vmlinuz-linux" "${MOUNT_PATH}/boot/${NAME}/"
+    cp "${SUBVOL}/boot/chroot-linux.img" "${MOUNT_PATH}/boot/${NAME}/"
+
+    AMD_UCODE=""
+    if [ -e "${SUBVOL}/boot/amd-ucode.img" ] ; then
+        cp "${SUBVOL}/boot/amd-ucode.img" "${MOUNT_PATH}/boot/${NAME}/"
+        AMD_UCODE="initrd /${NAME}/amd-ucode.img"
+    fi
+
+    INTEL_UCODE=""
+    if [ -e "${SUBVOL}/boot/intel-ucode.img" ] ; then
+        cp "${SUBVOL}/boot/intel-ucode.img" "${MOUNT_PATH}/boot/${NAME}/"
+        INTEL_UCODE="initrd /${NAME}/intel-ucode.img"
+    fi
+
+    ADDITIONAL_ARGUMENTS=""
+    if [ -e "${SUBVOL}/usr/lib/aldm.d/bootconfig.conf" ] ; then
+        ADDITIONAL_ARGUMENTS=$(cat "${SUBVOL}/usr/lib/aldm.d/bootconfig.conf")
+    fi
+
+    get_boot_cfg "${NAME}" "${AMD_UCODE}" "${INTEL_UCODE}" "${ADDITIONAL_ARGUMENTS}" > "${BOOT_CFG}"
+    cat > "${MOUNT_PATH}/boot/loader/loader.conf" <<EOF
+default aldm.conf
+timeout 0
+beep off
+EOF
+
+
+    # Check if there are migrations available
+    if compgen -G "${SUBVOL}/usr/lib/aldm.d/*.migration" > /dev/null ; then
+        for m in "${SUBVOL}/usr/lib/aldm.d/"*.migration ; do
+            unset -f post_install
+            # shellcheck source=/dev/null
+            . "$m"
+            if [ "$(type -t post_install)" == function ] ; then
+                post_install "${MOUNT_PATH}" "${SUBVOL}" "${NAME}"
+            fi
+            unset -f post_install
+        done
+    fi
+
+    # Export variables to be used by child processes
+    export MOUNT_PATH
+    export SUBVOL
+    export NAME
+
+    # Check if the FIRMWARE_OVERRIDE variable is set
+    if [ -n "${FIRMWARE_OVERRIDE}" ]; then
+        echo "export USE_FIRMWARE_OVERRIDES=1" > "${MOUNT_PATH}/etc/device-quirks.conf"
+    fi
+
+    # Run aldm-chroot to create mkinicpio.conf and build an chroot
+    if command -v aldm-chroot >/dev/null; then
+        aldm-chroot
+    else
+        echo "WARNING: aldm-chroot not found, skipping chroot generation"
+    fi
+
+    # Clean up
+    rm -f "${MOUNT_PATH}"/*.img.*
+    rm -f "${MOUNT_PATH}/sha256sum.txt"
+    rm -rf /var/lib/pacman # undo aldm-unlock
+
+    echo "Deployment complete; restart to boot into ${NAME}"
+}
+
+if [ "$0" = "$BASH_SOURCE" ] ; then
+    main "$@"
+fi
