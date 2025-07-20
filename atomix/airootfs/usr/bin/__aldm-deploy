@@ -101,7 +101,7 @@ get_boot_cfg() {
 linux /${version}/vmlinuz-linux
 ${amd_ucode}
 ${intel_ucode}
-initrd /${version}/chroot-linux.img
+initrd /${version}/initramfs-linux.img
 options root=LABEL=aldm_root rw rootflags=subvol=deploys/${version}  loglevel=3 rd.systemd.show_status=auto rd.udev.log_priority=3 ${additional_arguments}"
 }
 
