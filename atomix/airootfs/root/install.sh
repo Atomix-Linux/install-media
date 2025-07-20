@@ -215,7 +215,7 @@ Do you wish to proceed?" 15 70); then
 fi
 
 # perform bootstrap of disk
-if ! atomix-bootstrap atomix /dev/${DISK}; then
+if ! aldm-bootstrap atomix /dev/${DISK}; then
     whiptail --msgbox "System bootstrap step failed." 10 50
     cancel_install
 fi
@@ -248,7 +248,6 @@ mv "$TMP_FILE" "$DESTINATION"
 rm "$TMP_PKG"
 
 
-export SHOW_UI=1
 aldm-deploy Atomix-Linux/atomix:${TARGET}
 RESULT=$?
 
