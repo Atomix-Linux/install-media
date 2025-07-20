@@ -102,7 +102,7 @@ linux /${version}/vmlinuz-linux
 ${amd_ucode}
 ${intel_ucode}
 initrd /${version}/initramfs-linux.img
-options root=LABEL=aldm_root rw rootflags=subvol=deploys/${version}  loglevel=3 rd.systemd.show_status=auto rd.udev.log_priority=3 ${additional_arguments}"
+options root=LABEL=aldm_root rw rootflags=subvol=deploys/${version} loglevel=3 rd.systemd.show_status=auto rd.udev.log_priority=3 ${additional_arguments}"
 }
 
 get_deployment_to_delete() {
@@ -157,11 +157,33 @@ download_parts() {
     total_parts=${#parts[@]}
     part_num=0
 
+    # Calculate total size if possible
+    total_size=0
+    for part_url in "${parts[@]}"; do
+        # Try to get file size from Content-Length header
+        size=$(curl -sI "$part_url" | grep -i 'Content-Length' | awk '{print $2}' | tr -d '\r')
+        if [ -n "$size" ]; then
+            total_size=$((total_size + size))
+        fi
+    done
+
+    # If total_size is 0 (no headers), fall back to simple counting
+    if [ "$total_size" -eq 0 ]; then
+        total_size=$total_parts
+    fi
+
     # Download each part
+    downloaded_bytes=0
     for part_url in "${parts[@]}"; do
         part_num=$((part_num+1))
         part_name=$(basename "$part_url")
         PART_FILES+=("${mount_path}/${part_name}")
+
+        # Get current part size for progress calculation
+        part_size=$(curl -sI "$part_url" | grep -i 'Content-Length' | awk '{print $2}' | tr -d '\r')
+        if [ -z "$part_size" ]; then
+            part_size=1
+        fi
 
         if [ $steam_progress -eq 1 ]; then
             # Steam progress mode
@@ -172,18 +194,22 @@ download_parts() {
             echo "downloading ${part_name} (part $part_num/$total_parts)..."
             curl --http1.1 -L -o "${mount_path}/${part_name}" -C - "${part_url}"
         else
-            # UI mode - show progress for each part
+            # UI mode - single progress bar for all parts
             {
                 curl --http1.1 -# -L -o "${mount_path}/${part_name}" -C - "${part_url}" 2>&1 | \
                 stdbuf -oL tr '\r' '\n' | grep --line-buffered -oP '^\s*\K[0-9]+' | \
                 while read -r progress; do
-                    # Calculate overall progress across all parts
-                    overall_progress=$(( (part_num - 1) * 100 + progress ))
-                    overall_percent=$(( overall_progress / total_parts ))
+                    # Calculate downloaded bytes for this part
+                    current_bytes=$((downloaded_bytes + (progress * part_size / 100)))
+                    # Calculate overall percentage
+                    overall_percent=$((current_bytes * 100 / total_size))
                     echo "$overall_percent"
                 done
             } | whiptail --gauge "Downloading system image part $part_num/$total_parts (${part_name})" 10 50 0
         fi
+
+        # Update downloaded bytes after part is completed
+        downloaded_bytes=$((downloaded_bytes + part_size))
     done
 
     # Combine parts

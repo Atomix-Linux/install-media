@@ -214,6 +214,7 @@ Do you wish to proceed?" 15 70); then
         cancel_install
 fi
 
+# TODO - Add disk partitons to make more modular
 # perform bootstrap of disk
 if ! aldm-bootstrap atomix /dev/${DISK}; then
     whiptail --msgbox "System bootstrap step failed." 10 50
@@ -247,7 +248,7 @@ tar -I zstd -xvf "$TMP_PKG" usr/lib/steam/bootstraplinux_ubuntu12_32.tar.xz -O >
 mv "$TMP_FILE" "$DESTINATION"
 rm "$TMP_PKG"
 
-
+export SHOW_UI=1
 aldm-deploy Atomix-Linux/atomix:${TARGET}
 RESULT=$?
 

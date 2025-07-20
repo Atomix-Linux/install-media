@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034
 
-iso_name="atomix-linux"
+iso_name="atomix-linux-install"
 iso_label="ATOMIX_$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y%m)"
 iso_publisher="Atomix Linux <https://atomix-linux.github.io>"
 iso_application="Atomix Linux Installer"
