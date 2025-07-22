@@ -248,7 +248,6 @@ tar -I zstd -xvf "$TMP_PKG" usr/lib/steam/bootstraplinux_ubuntu12_32.tar.xz -O >
 mv "$TMP_FILE" "$DESTINATION"
 rm "$TMP_PKG"
 
-export SHOW_UI=1
 aldm-deploy Atomix-Linux/atomix:${TARGET}
 RESULT=$?
 
