@@ -2,6 +2,7 @@
 
 set -e
 
+# Check if script is run as root
 if [ $EUID -ne 0 ]; then
 	echo "$(basename $0) must be run as root"
 	exit 1
@@ -9,6 +10,7 @@ fi
 
 MOUNT_PATH=/tmp/aldm_root
 
+# Prepare device list for selection
 device_list=()
 device_output=`lsblk --list -n -o name,model,size,type | grep disk | tr -s ' ' '\t'`
 
@@ -20,15 +22,13 @@ while read -r line; do
 	device_list+=("$model ($size)")
 done <<< "$device_output"
 
+# Select target disk
 DISK=$(whiptail --nocancel --menu "Choose a disk to install to:" 20 50 5 "${device_list[@]}" 3>&1 1>&2 2>&3)
 
-# Checking for existing installation
-
+# Check for existing installation (both modes)
 REPAIR=false
-
-if (lsblk -o label ${DISK} | grep -q EFI); then
+if (blkid -s LABEL | grep -q 'aldm_root') || (blkid -s LABEL | grep -q 'EFI'); then
     echo "Existing installation found"
-
     if (whiptail --yesno --yes-button "Repair" --no-button "Clean" "WARNING: $DISK appears to already have a system installed. Would you like to repair it or do a clean install?\n\nNOTE: A clean install will delete everything on the disk, but a repair install will preserve your user data." 13 70); then
         echo "User chose to do a repair install"
         REPAIR=true
@@ -39,72 +39,143 @@ else
     echo "Existing installation not found"
 fi
 
-
-
-########## Doing a repair install
-
+########## REPAIR INSTALL (for both modes)
 if [ "${REPAIR}" == true ]; then
+    mkdir -p ${MOUNT_PATH}
 
+    # Find partitions by label
+    ROOT_PART=$(blkid -L aldm_root)
+    EFI_PART=$(blkid -L EFI)
+
+    if [ -z "$ROOT_PART" ] || [ -z "$EFI_PART" ]; then
+        echo "ERROR: Required partitions not found for repair"
+        exit 1
+    fi
+
+    # Mount partitions
+    mount ${ROOT_PART} ${MOUNT_PATH}
+    mount -t vfat ${EFI_PART} ${MOUNT_PATH}/boot/
+
+    # Clean boot and reinstall bootloader
+    rm -rf ${MOUNT_PATH}/boot/*
+    bootctl --esp-path=${MOUNT_PATH}/boot/ install
+
+    # Clean system configuration
+    echo "Deleting subvolume..."
+    btrfs subvolume delete ${MOUNT_PATH}/deploys/* || true
+    rm -rf ${MOUNT_PATH}/etc/*
+
+    # Unmount and exit
+    umount -R ${MOUNT_PATH}
+    echo "Repair completed successfully!"
+    exit 0
+fi
+
+# Select installation mode
+INSTALL_MODE=$(whiptail --nocancel --menu "Choose installation mode:" 15 50 2 \
+	"Quick" "Erase entire disk and install" \
+	"Advanced" "Manual partitioning (cfdisk)" 3>&1 1>&2 2>&3)
+
+########## ADVANCED MODE (manual partitioning)
+if [ "$INSTALL_MODE" == "Advanced" ]; then
+	# Run cfdisk for manual partitioning
+	cfdisk ${DISK}
+
+	# Get partition list
+	partition_list=()
+while IFS= read -r part; do
+	partition_list+=("/dev/$part" "")
+done < <(lsblk -ln -o NAME,TYPE ${DISK} | awk '$2 == "part" {print $1}')
+
+
+	# Select root partition
+	ROOT_PART=$(whiptail --nocancel --menu "Select SYSTEM partition:" 20 60 5 "${partition_list[@]}" 3>&1 1>&2 2>&3)
+	FORMAT_ROOT=$(whiptail --yesno "Format ${ROOT_PART} as Btrfs?" 10 50 3>&1 1>&2 2>&3)
+
+	# Select EFI partition
+	EFI_PART=$(whiptail --nocancel --menu "Select EFI partition:" 20 60 5 "${partition_list[@]}" 3>&1 1>&2 2>&3)
+	FORMAT_EFI=$(whiptail --yesno "Format ${EFI_PART} as FAT32?" 10 50 3>&1 1>&2 2>&3)
+
+	# Confirmation before proceeding
+	if ! (whiptail --yesno "WARNING: The following operations will be performed:\n\n\
+- SYSTEM partition: ${ROOT_PART} ${FORMAT_ROOT:+ [FORMAT as Btrfs]}\n\
+- EFI partition: ${EFI_PART} ${FORMAT_EFI:+ [FORMAT as FAT32]}\n\n\
+All data on these partitions will be lost. Continue?" 15 60); then
+		echo "Installation aborted"
+		exit 1
+	fi
+
+	# Prepare mount point
 	mkdir -p ${MOUNT_PATH}
-	INSTALL_MOUNT=$(fdisk -o Device --list ${DISK} | grep "^${DISK}.*2$")
-	BOOT_EFI=$(fdisk -o Device --list ${DISK} | grep "^${DISK}.*1$")
-	mount ${INSTALL_MOUNT} ${MOUNT_PATH}
-	mount -t vfat ${BOOT_EFI} ${MOUNT_PATH}/boot/
-	rm -rf ${MOUNT_PATH}/boot/*
-	bootctl --esp-path=${MOUNT_PATH}/boot/ install
 
-	echo "deleting subvolume..."
-	btrfs subvolume delete ${MOUNT_PATH}/deploys/* || true
+	# Format and mount root partition
+	if [ "$FORMAT_ROOT" == "0" ]; then
+		mkfs.btrfs  -L aldm_root -f ${ROOT_PART}
+	fi
+	mount -t btrfs -o nodatacow ${ROOT_PART} ${MOUNT_PATH}
 
-	rm -rf ${MOUNT_PATH}/etc/*
+	# Format and mount EFI partition
+	if [ "$FORMAT_EFI" == "0" ]; then
+		mkfs.vfat -F 32 ${EFI_PART}
+	fi
+	dosfslabel ${EFI_PART} EFI
+	mkdir -p ${MOUNT_PATH}/boot
+	mount -t vfat ${EFI_PART} ${MOUNT_PATH}/boot/
 
-	exit 0
+########## QUICK MODE (automatic partitioning)
+else
+	# Confirmation before disk wipe
+	if ! (whiptail --yesno "WARNING: $DISK will now be formatted. All data on the disk will be lost. Do you wish to proceed?" 10 50); then
+		echo "Installation aborted"
+		exit 1
+	fi
+
+	# Automatic partitioning
+	mkdir -p ${MOUNT_PATH}
+	parted --script ${DISK} \
+		mklabel gpt \
+		mkpart primary fat32 1MiB 512MiB \
+		set 1 esp on \
+		mkpart primary 512MiB 100%
+
+	PART1=$(fdisk -o Device --list ${DISK} | grep "^${DISK}.*1$")
+	PART2=$(fdisk -o Device --list ${DISK} | grep "^${DISK}.*2$")
+
+	# Format partitions
+	mkfs.btrfs -L aldm_root -f ${PART2}
+	mount -t btrfs -o nodatacow ${PART2} ${MOUNT_PATH}
+	mkfs.vfat ${PART1}
+	dosfslabel ${PART1} EFI
+	mkdir -p ${MOUNT_PATH}/boot
+	mount -t vfat ${PART1} ${MOUNT_PATH}/boot/
 fi
 
-
-
-########## Doing a fresh install
-
-if ! (whiptail --yesno "WARNING: $DISK will now be formatted. All data on the disk will be lost. Do you wish to proceed?" 10 50); then
-	echo "installation aborted"
-	exit 1
+########## COMMON INSTALLATION STEPS (both modes)
+# Create Btrfs subvolumes
+if btrfs subvolume show ${MOUNT_PATH}/var &>/dev/null; then
+    btrfs subvolume delete ${MOUNT_PATH}/var
 fi
 
-USERNAME=user
-
-if [ ! -z $1 ]; then
-	USERNAME=$1
+if btrfs subvolume show ${MOUNT_PATH}/home &>/dev/null; then
+    btrfs subvolume delete ${MOUNT_PATH}/home
 fi
-
-mkdir -p ${MOUNT_PATH}
-
-# create partition table and create and mount the btrfs filesystem
-parted --script ${DISK} \
-	mklabel gpt \
-	mkpart primary fat32 1MiB 512MiB \
-	set 1 esp on \
-	mkpart primary 512MiB 100%
-
-PART1=$(fdisk -o Device --list ${DISK} | grep "^${DISK}.*1$")
-PART2=$(fdisk -o Device --list ${DISK} | grep "^${DISK}.*2$")
-
-mkfs.btrfs -L aldm_root -f ${PART2}
-mount -t btrfs -o nodatacow ${PART2} ${MOUNT_PATH}
 
 btrfs subvolume create ${MOUNT_PATH}/var
 btrfs subvolume create ${MOUNT_PATH}/home
 
+
+# Create user directory
+USERNAME=user
+if [ ! -z $1 ]; then
+	USERNAME=$1
+fi
 mkdir -p ${MOUNT_PATH}/home/${USERNAME}
 chown 1000:1000 ${MOUNT_PATH}/home/${USERNAME}
 
-mkdir ${MOUNT_PATH}/boot
+# Create system directories
 mkdir -p ${MOUNT_PATH}/etc
 mkdir -p ${MOUNT_PATH}/.etc
 
-
-# setup boot partition & install bootloader
-mkfs.vfat ${PART1}
-dosfslabel ${PART1} EFI
-mount -t vfat ${PART1} ${MOUNT_PATH}/boot/
+# Install bootloader
 bootctl --esp-path=${MOUNT_PATH}/boot/ install
 parted ${DISK} set 1 boot on
