@@ -110,7 +110,7 @@ All data on these partitions will be lost. Continue?" 15 60); then
 
 	# Format and mount root partition
 	if [ "$FORMAT_ROOT" == "0" ]; then
-		mkfs.btrfs  -L aldm_root -f ${ROOT_PART}
+		mkfs.btrfs  -f ${ROOT_PART}
 	fi
 	mount -t btrfs -o nodatacow ${ROOT_PART} ${MOUNT_PATH}
 
@@ -119,6 +119,7 @@ All data on these partitions will be lost. Continue?" 15 60); then
 		mkfs.vfat -F 32 ${EFI_PART}
 	fi
 	dosfslabel ${EFI_PART} EFI
+	btrfs filesystem label ${MOUNT_PATH} aldm_root
 	mkdir -p ${MOUNT_PATH}/boot
 	mount -t vfat ${EFI_PART} ${MOUNT_PATH}/boot/
 
