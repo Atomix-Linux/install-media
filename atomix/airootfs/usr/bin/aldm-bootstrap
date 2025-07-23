@@ -78,50 +78,43 @@ INSTALL_MODE=$(whiptail --nocancel --menu "Choose installation mode:" 15 50 2 \
 
 ########## ADVANCED MODE (manual partitioning)
 if [ "$INSTALL_MODE" == "Advanced" ]; then
-	# Run cfdisk for manual partitioning
-	cfdisk ${DISK}
+  cfdisk "${DISK}"
+  # Zbiór partycji
+  partition_list=()
+  while IFS= read -r part; do
+    partition_list+=("/dev/$part" "")
+  done < <(lsblk -ln -o NAME,TYPE "${DISK}" | awk '$2=="part"{print $1}')
 
-	# Get partition list
-	partition_list=()
-while IFS= read -r part; do
-	partition_list+=("/dev/$part" "")
-done < <(lsblk -ln -o NAME,TYPE ${DISK} | awk '$2 == "part" {print $1}')
+  ROOT_PART=$(whiptail --nocancel --menu "Select SYSTEM partition:" 20 60 5 "${partition_list[@]}" 3>&1 1>&2 2>&3)
+  if whiptail --yesno "Format ${ROOT_PART} as Btrfs?" 10 50; then
+    FORMAT_ROOT=true
+  else
+    FORMAT_ROOT=false
+  fi
 
+  EFI_PART=$(whiptail --nocancel --menu "Select EFI partition:" 20 60 5 "${partition_list[@]}" 3>&1 1>&2 2>&3)
+  if whiptail --yesno "Format ${EFI_PART} as FAT32?" 10 50; then
+    FORMAT_EFI=true
+  else
+    FORMAT_EFI=false
+  fi
 
-	# Select root partition
-	ROOT_PART=$(whiptail --nocancel --menu "Select SYSTEM partition:" 20 60 5 "${partition_list[@]}" 3>&1 1>&2 2>&3)
-	FORMAT_ROOT=$(whiptail --yesno "Format ${ROOT_PART} as Btrfs?" 10 50 3>&1 1>&2 2>&3)
+  whiptail --yesno "WARNING: SYSTEM=${ROOT_PART} ${FORMAT_ROOT:+[format]}, EFI=${EFI_PART} ${FORMAT_EFI:+[format]}\n\nContinue?" 15 60 || { echo "Aborted"; exit 1; }
 
-	# Select EFI partition
-	EFI_PART=$(whiptail --nocancel --menu "Select EFI partition:" 20 60 5 "${partition_list[@]}" 3>&1 1>&2 2>&3)
-	FORMAT_EFI=$(whiptail --yesno "Format ${EFI_PART} as FAT32?" 10 50 3>&1 1>&2 2>&3)
+  mkdir -p "${MOUNT_PATH}"
 
-	# Confirmation before proceeding
-	if ! (whiptail --yesno "WARNING: The following operations will be performed:\n\n\
-- SYSTEM partition: ${ROOT_PART} ${FORMAT_ROOT:+ [FORMAT as Btrfs]}\n\
-- EFI partition: ${EFI_PART} ${FORMAT_EFI:+ [FORMAT as FAT32]}\n\n\
-All data on these partitions will be lost. Continue?" 15 60); then
-		echo "Installation aborted"
-		exit 1
-	fi
+  if [ "$FORMAT_ROOT" = true ]; then
+    mkfs.btrfs -f "${ROOT_PART}"
+  fi
+  mount -t btrfs -o nodatacow "${ROOT_PART}" "${MOUNT_PATH}"
 
-	# Prepare mount point
-	mkdir -p ${MOUNT_PATH}
-
-	# Format and mount root partition
-	if [ "$FORMAT_ROOT" == "0" ]; then
-		mkfs.btrfs  -f ${ROOT_PART}
-	fi
-	mount -t btrfs -o nodatacow ${ROOT_PART} ${MOUNT_PATH}
-
-	# Format and mount EFI partition
-	if [ "$FORMAT_EFI" == "0" ]; then
-		mkfs.vfat -F 32 ${EFI_PART}
-	fi
-	dosfslabel ${EFI_PART} EFI
-	btrfs filesystem label ${MOUNT_PATH} aldm_root
-	mkdir -p ${MOUNT_PATH}/boot
-	mount -t vfat ${EFI_PART} ${MOUNT_PATH}/boot/
+  if [ "$FORMAT_EFI" = true ]; then
+    mkfs.vfat -F 32 "${EFI_PART}"
+  fi
+  btrfs filesystem label ${MOUNT_PATH} aldm_root
+  dosfslabel "${EFI_PART}" EFI
+  mkdir -p "${MOUNT_PATH}/boot"
+  mount -t vfat "${EFI_PART}" "${MOUNT_PATH}/boot"
 
 ########## QUICK MODE (automatic partitioning)
 else
