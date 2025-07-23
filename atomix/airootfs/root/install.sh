@@ -206,14 +206,6 @@ MOUNT_PATH=/tmp/aldm_root
 # sets DISK and DISK_DESC
 select_disk
 
-# warn before erasing disk
-if ! (whiptail --yesno --defaultno --yes-button "Erase disk and install" --no-button "Cancel install" "\
-WARNING: $OS_NAME will now be installed and all data on the following disk will be lost:\n\n\
-        $DISK - $DISK_DESC\n\n\
-Do you wish to proceed?" 15 70); then
-        cancel_install
-fi
-
 # TODO - Add disk partitons to make more modular
 # perform bootstrap of disk
 if ! aldm-bootstrap atomix /dev/${DISK}; then
