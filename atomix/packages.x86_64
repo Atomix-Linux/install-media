@@ -20,6 +20,7 @@ linux-atomix-headers
 linux-firmware
 mkinitcpio
 mkinitcpio-archiso
+plymouth
 nano
 netctl
 openssh
