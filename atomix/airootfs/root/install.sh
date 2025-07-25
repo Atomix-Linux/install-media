@@ -13,6 +13,35 @@ clean_progress() {
         done
 }
 
+enable_all_gamepads() {
+        # by default, only handheld gamepads are enabled, this enables all other supported gamepads
+        busctl set-property org.shadowblip.InputPlumber /org/shadowblip/InputPlumber/Manager \
+            org.shadowblip.InputManager \
+            ManageAllDevices b 1 &> /dev/null
+}
+
+load_gamepad_profile() {
+        # load a gamepad profile that emulates a keyboard for interaction with the keyboard based UI
+        busctl call org.shadowblip.InputPlumber \
+                /org/shadowblip/InputPlumber/CompositeDevice0 \
+                org.shadowblip.Input.CompositeDevice \
+                LoadProfilePath "s" /root/gamepad_profile.yaml &> /dev/null
+}
+
+poll_gamepad() {
+        modprobe xpad > /dev/null
+        systemctl start inputplumber > /dev/null
+
+        while true; do
+                sleep 1
+                enable_all_gamepads
+                load_gamepad_profile
+                if [ $? == 0 ]; then
+                        break
+                fi
+        done
+}
+
 get_boot_disk() {
         local current_boot_id=$(efibootmgr | grep BootCurrent | head -1 | cut -d':' -f 2 | tr -d ' ')
         local boot_disk_info=$(efibootmgr | grep "Boot${current_boot_id}" | head -1)
@@ -173,6 +202,8 @@ DEVICE_CPU=$(lscpu | grep Vendor | cut -d':' -f2 | xargs echo -n)
 
 dmesg --console-level 1
 
+# start polling for a gamepad
+poll_gamepad &
 
 # try to set correct date & time -- required to be able to connect to github via https if your hardware clock is set too far into the past
 timedatectl set-ntp true
